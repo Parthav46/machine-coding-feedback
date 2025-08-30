@@ -8,3 +8,7 @@ tests/out
 .DS_Store
 .*
 !.gitignore
+
+# dotnet ignore
+bin/
+obj/
