@@ -134,7 +134,7 @@ namespace ParkingLot.DataLayer
             return true;
         }
 
-        public async Task<Slot> GetAvailableSlot(string lotId, VehicleType vehicleType, int retryCount = 0)
+        public async Task<Slot> GetAvailableSlot(string lotId, VehicleType vehicleType)
         {
             if (!_availableVehicleTypeSlotsOrderedIndex.TryGetValue((lotId, vehicleType), out var pq))
             {
