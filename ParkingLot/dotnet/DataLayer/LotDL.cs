@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using ParkingLot.Entity;
 using ParkingLot.Entity.Enum;
@@ -12,15 +13,19 @@ namespace ParkingLot.DataLayer
     {
         private readonly ConcurrentDictionary<string, Lot> _lots;
         private readonly ConcurrentDictionary<string, Slot> _slots;
-        private readonly ConcurrentDictionary<string, List<string>> _lotSlotsMapping;
+        private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _lotSlotsMapping;
         private readonly ConcurrentDictionary<(string, VehicleType), PriorityQueue<string, int>> _availableVehicleTypeSlotsOrderedIndex;
+        private readonly ConcurrentDictionary<(string, VehicleType), SemaphoreSlim> _pqLocks;
+
         private readonly Func<int, VehicleType> _getVehicleTypeBySlotStrategy;
+
         public LotDL()
         {
             _lots = new ConcurrentDictionary<string, Lot>();
             _slots = new ConcurrentDictionary<string, Slot>();
-            _lotSlotsMapping = new ConcurrentDictionary<string, List<string>>();
+            _lotSlotsMapping = new ConcurrentDictionary<string, ConcurrentBag<string>>();
             _availableVehicleTypeSlotsOrderedIndex = new ConcurrentDictionary<(string, VehicleType), PriorityQueue<string, int>>();
+            _pqLocks = new ConcurrentDictionary<(string, VehicleType), SemaphoreSlim>();
 
             _getVehicleTypeBySlotStrategy = slotNumber =>
             {
@@ -33,42 +38,37 @@ namespace ParkingLot.DataLayer
             };
         }
 
-        public Task<bool> CreateLot(Lot lot)
+        public async Task<bool> CreateLot(Lot lot)
         {
-            if(!_lots.TryAdd(lot.Id, lot))
+            if (!_lots.TryAdd(lot.Id, lot))
             {
-                return Task.FromResult(false);
+                return false;
             }
 
-            for(int i = 1; i <= lot.Floors; i++)
+            for (int floor = 1; floor <= lot.Floors; floor++)
             {
-                for (int j = 1; j <= lot.FloorCapacity; j++)
+                for (int slotNumber = 1; slotNumber <= lot.FloorCapacity; slotNumber++)
                 {
-                    VehicleType vehicleType = _getVehicleTypeBySlotStrategy(j);
-                    var slot = new Slot(vehicleType, lot.Id, i, j, lot.FloorCapacity);
-                    if (!TryAddSlotToLot(lot.Id, slot))
+                    var vehicleType = _getVehicleTypeBySlotStrategy(slotNumber);
+                    var slot = new Slot(vehicleType, lot.Id, floor, slotNumber, lot.FloorCapacity);
+                    if (!await TryAddSlotToLot(lot.Id, slot))
                     {
-                        return Task.FromResult(false);
+                        return false;
                     }
                 }
             }
 
-            return Task.FromResult(true);
+            return true;
         }
 
-        private bool TryAddSlotToLot(string lotId, Slot slot)
+        private async Task<bool> TryAddSlotToLot(string lotId, Slot slot)
         {
             if (!_lots.TryGetValue(lotId, out var lot))
             {
                 return false;
             }
 
-            if (lot.FloorCapacity < slot.SlotNumber)
-            {
-                return false;
-            }
-
-            if (lot.Floors < slot.Floor)
+            if (lot.FloorCapacity < slot.SlotNumber || lot.Floors < slot.Floor)
             {
                 return false;
             }
@@ -78,32 +78,30 @@ namespace ParkingLot.DataLayer
                 return false;
             }
 
-            _lotSlotsMapping.AddOrUpdate(lot.Id, new List<string> { slot.Id }, (key, oldValue) =>
-            {
-                oldValue.Add(slot.Id);
-                return oldValue;
-            });
+            _lotSlotsMapping.AddOrUpdate(lot.Id,
+                _ => new ConcurrentBag<string>(new[] { slot.Id }),
+                (_, bag) => { bag.Add(slot.Id); return bag; });
 
-            _availableVehicleTypeSlotsOrderedIndex.AddOrUpdate((lot.Id, slot.VehicleType),
-                new PriorityQueue<string, int>(new[] { (slot.Id, slot.Rank) }),
-                (key, oldValue) =>
-                    {
-                        oldValue.Enqueue(slot.Id, slot.Rank);
-                        return oldValue;
-                    }
-            );
+            var key = (lot.Id, slot.VehicleType);
+            var pq = _availableVehicleTypeSlotsOrderedIndex.GetOrAdd(key, _ => new PriorityQueue<string, int>());
+            var sem = _pqLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+            await sem.WaitAsync();
+            try
+            {
+                pq.Enqueue(slot.Id, slot.Rank);
+            }
+            finally
+            {
+                sem.Release();
+            }
 
             return true;
         }
 
-        public async Task<Lot> GetLotById(string lotId)
+        public Task<Lot> GetLotById(string lotId)
         {
-            if (!_lots.TryGetValue(lotId, out var lot))
-            {
-                return null;
-            }
-
-            return await Task.FromResult(lot);
+            _lots.TryGetValue(lotId, out var lot);
+            return Task.FromResult(lot);
         }
 
         public async Task<bool> FreeUpSlot(string slotId)
@@ -119,29 +117,47 @@ namespace ParkingLot.DataLayer
             }
 
             slot.RemoveVehicle();
-            _availableVehicleTypeSlotsOrderedIndex.AddOrUpdate((slot.LotId, slot.VehicleType),
-                new PriorityQueue<string, int>([(slot.Id, slot.Rank)]),
-                (key, oldValue) =>
-                {
-                    oldValue.Enqueue(slot.Id, slot.Rank);
-                    return oldValue;
-                }
-            );
 
-            return await Task.FromResult(true);
+            var key = (slot.LotId, slot.VehicleType);
+            var pq = _availableVehicleTypeSlotsOrderedIndex.GetOrAdd(key, _ => new PriorityQueue<string, int>());
+            var sem = _pqLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+            await sem.WaitAsync();
+            try
+            {
+                pq.Enqueue(slot.Id, slot.Rank);
+            }
+            finally
+            {
+                sem.Release();
+            }
+
+            return true;
         }
 
         public async Task<Slot> GetAvailableSlot(string lotId, VehicleType vehicleType, int retryCount = 0)
         {
-            if (!_availableVehicleTypeSlotsOrderedIndex.TryGetValue((lotId, vehicleType), out var availableSlots) || availableSlots.Count == 0)
+            if (!_availableVehicleTypeSlotsOrderedIndex.TryGetValue((lotId, vehicleType), out var pq))
             {
                 return null;
             }
 
-            if (!availableSlots.TryDequeue(out var slotId, out var _))
+            var key = (lotId, vehicleType);
+            var sem = _pqLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+
+            string slotId;
+            await sem.WaitAsync();
+            try
             {
-                return null;
+                if (!pq.TryDequeue(out slotId, out _))
+                {
+                    return null;
+                }
             }
+            finally
+            {
+                sem.Release();
+            }
+
             if (!_slots.TryGetValue(slotId, out var slot))
             {
                 return null;
@@ -158,7 +174,10 @@ namespace ParkingLot.DataLayer
                 return Task.FromResult(null as List<Slot>);
             }
 
-            var slots = slotIds.Select(id => _slots[id]).Where(slot => slot.VehicleType == vehicleType).ToList();
+            var slots = slotIds
+                .Select(id => _slots[id])
+                .Where(s => s.VehicleType == vehicleType)
+                .ToList();
             return Task.FromResult(slots);
         }
     }
