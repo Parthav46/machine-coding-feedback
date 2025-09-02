@@ -1,9 +1,9 @@
-using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using ParkingLot.BusinessLayer;
 using ParkingLot.Entity;
 using ParkingLot.Entity.Enum;
 
@@ -17,25 +17,16 @@ namespace ParkingLot.DataLayer
         private readonly ConcurrentDictionary<(string, VehicleType), PriorityQueue<string, int>> _availableVehicleTypeSlotsOrderedIndex;
         private readonly ConcurrentDictionary<(string, VehicleType), SemaphoreSlim> _pqLocks;
 
-        private readonly Func<int, VehicleType> _getVehicleTypeBySlotStrategy;
+        private readonly ISlotAssignmentStrategy _slotStrategy;
 
-        public LotDL()
+        public LotDL(ISlotAssignmentStrategy slotStrategy)
         {
+            _slotStrategy = slotStrategy;
             _lots = new ConcurrentDictionary<string, Lot>();
             _slots = new ConcurrentDictionary<string, Slot>();
             _lotSlotsMapping = new ConcurrentDictionary<string, ConcurrentBag<string>>();
             _availableVehicleTypeSlotsOrderedIndex = new ConcurrentDictionary<(string, VehicleType), PriorityQueue<string, int>>();
             _pqLocks = new ConcurrentDictionary<(string, VehicleType), SemaphoreSlim>();
-
-            _getVehicleTypeBySlotStrategy = slotNumber =>
-            {
-                return slotNumber switch
-                {
-                    1 => VehicleType.Truck,
-                    2 or 3 => VehicleType.Bike,
-                    _ => VehicleType.Car
-                };
-            };
         }
 
         public async Task<bool> CreateLot(Lot lot)
@@ -45,12 +36,13 @@ namespace ParkingLot.DataLayer
                 return false;
             }
 
-            for (int floor = 1; floor <= lot.Floors; floor++)
+        for (int floor = 1; floor <= lot.Floors; floor++)
             {
                 for (int slotNumber = 1; slotNumber <= lot.FloorCapacity; slotNumber++)
                 {
-                    var vehicleType = _getVehicleTypeBySlotStrategy(slotNumber);
-                    var slot = new Slot(vehicleType, lot.Id, floor, slotNumber, lot.FloorCapacity);
+                    var vehicleType = _slotStrategy.ClassifyBySlotNumber(slotNumber);
+                    var rank = _slotStrategy.ComputeRank(floor, slotNumber, lot.FloorCapacity);
+                    var slot = new Slot(vehicleType, lot.Id, floor, slotNumber, rank);
                     if (!await TryAddSlotToLot(lot.Id, slot))
                     {
                         return false;

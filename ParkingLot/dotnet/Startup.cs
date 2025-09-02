@@ -22,6 +22,7 @@ namespace ParkingLot
             services.AddScoped<ITicketBL, TicketBL>();
             services.AddScoped<ILotBL, LotBL>();
             services.AddSingleton<ITicketDL, TicketDL>();
+            services.AddSingleton<ISlotAssignmentStrategy, FirstAvailableSlotAssignmentStrategy>();
             services.AddSingleton<ILotDL, LotDL>();
         }
     }

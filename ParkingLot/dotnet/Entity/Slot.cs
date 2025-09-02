@@ -12,7 +12,7 @@ namespace ParkingLot.Entity
         public VehicleType VehicleType { get; private set; }
         public SlotStatus Status { get; private set; }
 
-        public Slot(VehicleType vehicleType, string lotId, int floor, int slotNumber, int floorCapacity)
+        public Slot(VehicleType vehicleType, string lotId, int floor, int slotNumber, int rank)
         {
             Id = $"{lotId}_{floor}_{slotNumber}";
             VehicleType = vehicleType;
@@ -20,7 +20,7 @@ namespace ParkingLot.Entity
             Floor = floor;
             SlotNumber = slotNumber;
             Status = SlotStatus.Available;
-            Rank = (floor - 1) * floorCapacity + slotNumber;
+            Rank = rank;
         }
 
         public void ParkVehicle()

@@ -36,7 +36,7 @@ namespace ParkingLot.BusinessLayer
                 throw new Exception("Failed to create ticket");
             }
 
-            return ticket.Id;
+            return ticket.DisplayId;
         }
 
         public async Task<Ticket> UnparkVehicle(string ticketId)
@@ -47,7 +47,7 @@ namespace ParkingLot.BusinessLayer
                 return null;
             }
 
-            await _lotBL.FreeUpSlot(ticketId);
+            await _lotBL.FreeUpSlot(ticket.SlotId);
             return ticket;
         }
     }
